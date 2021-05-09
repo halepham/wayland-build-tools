@@ -10,25 +10,43 @@ fi
 set -e
 
 gen() {
-	pkg=$1
-	shift
-	echo
-	echo $pkg
-	cd $WLROOT/$pkg
-	echo "./autogen.sh --prefix=$WLD $*"
-	./autogen.sh --prefix=$WLD $*
+    pkg=$1
+    shift
+    echo
+    echo $pkg
+    cd $WLROOT/$pkg
+    if [ -f ./meson.build ]
+    then
+        echo "meson -C build/ -Dprefix=$WLD $*"
+        rm -rf build/
+        meson build/ -Dprefix=$WLD $*
+    elif [ -f ./autogen.sh ]
+    then
+        echo "./autogen.sh --prefix=$WLD $*"
+        ./autogen.sh --prefix=$WLD $*
+    else
+        exit 1
+    fi
 }
 
 compile() {
-	make -j32 && make install
-	if [ $? != 0 ]; then
-		echo "Build Error.  Terminating"
-		exit
-	fi
+    if [ -f ./meson.build ]
+    then
+        ninja -C build/ install
+    elif [ -f ./autogen.sh ]
+    then
+        make -j && make install
+        if [ $? != 0 ]; then
+            echo "Build Error.  Terminating"
+            exit
+        fi
+    else
+        exit 1
+    fi
 }
 
 distcheck() {
-	make distcheck
+    make distcheck
 }
 
 # TODO: Check if tree doesn't exist
@@ -44,7 +62,7 @@ compile
 gen wayland-protocols
 compile
 
-gen drm --disable-libkms
+gen drm -Dlibkms=false
 compile
 
 gen proto
@@ -56,19 +74,23 @@ compile
 gen libxcb
 compile
 
-gen presentproto
-compile
-
-gen dri3proto
-compile
+echo
+echo "xorgproto"
+cd $WLROOT/xorgproto
+./autogen.sh --prefix=$WLD
+make -j && make install
+if [ $? != 0 ]; then
+    echo "Build Error.  Terminating"
+    exit
+fi
 
 gen libxshmfence
 compile
 
 gen libxkbcommon \
-	--with-xkb-config-root=/usr/share/X11/xkb \
-	--with-x-locale-root=/usr/share/X11/locale \
-	--disable-x11
+    -Dxkb-config-root=/usr/share/X11/xkb \
+    -Dx-locale-root=/usr/share/X11/locale \
+    -Denable-x11=false
 compile
 
 llvm_drivers=swrast,nouveau,r300
@@ -76,28 +98,28 @@ vga_pci=$(lspci | grep VGA | head -n1)
 vga_name=${vga_pci#*controller: }
 vga_manu=${vga_name%% *}
 if [ "${vga_manu}" = "NVIDIA" ]; then
-	llvm_drivers=swrast,nouveau
+    llvm_drivers=swrast,nouveau
 fi
 
 echo
 echo "mesa"
 cd $WLROOT/mesa
 git clean -xfd
-./autogen.sh --prefix=$WLD \
-	--enable-gles2 \
-	--with-egl-platforms=x11,wayland,drm \
-	--enable-gbm \
-	--enable-shared-glapi \
-	--disable-llvm-shared-libs \
-	--disable-dri3 \
-	--with-gallium-drivers=$llvm_drivers
+meson build/ -Dprefix=$WLD \
+    -Dgles2=enabled \
+    -Dplatforms=x11,wayland \
+    -Dgbm=enabled \
+    -Dshared-glapi=enabled \
+    -Dshared-llvm=disabled \
+    -Ddri3=enabled \
+    -Dgallium-drivers=$llvm_drivers
 compile
 
 
 gen pixman
 compile
 
-gen cairo --enable-xcb --enable-gl
+gen cairo -Dxcb=enabled -Dgl-backend=gl
 compile
 
 echo
@@ -119,6 +141,7 @@ compile
 echo
 echo libinput
 cd $WLROOT/libinput
+git checkout main
 rm -rf $WLROOT/libinput/builddir/
 mkdir $WLROOT/libinput/builddir/
 echo "meson --prefix=$WLD builddir/"
@@ -127,15 +150,21 @@ ninja -C builddir/
 ninja -C builddir/ install
 # sudo udevadm hwdb --update
 
+gen gst-build
+compile
+
+echo
+echo pipewire
+cd $WLROOT/pipewire
+meson setup build/
+meson configure build/ -Dprefix=$WLD
+ninja -C build/ install
 
 if [ ${INCLUDE_XWAYLAND} ]; then
 	if [ ${WL_BITS} = 32 ]; then
 		gen libxtrans
 		compile
 	fi
-
-	gen xproto
-	compile
 
 	rm -rf $WLROOT/libepoxy/m4
 	gen libepoxy
@@ -144,39 +173,18 @@ if [ ${INCLUDE_XWAYLAND} ]; then
 	gen glproto
 	compile
 
-	gen xcmiscproto
-	compile
-
 	gen libxtrans
-	compile
-
-	gen bigreqsproto
-	compile
-
-	gen xextproto
-	compile
-
-	gen fontsproto
-	compile
-
-	gen videoproto
-	compile
-
-	gen recordproto
-	compile
-
-	gen resourceproto
-	compile
-
-	gen xf86driproto
-	compile
-
-	gen randrproto
 	compile
 
 	gen libxkbfile
 	compile
 
+    cd $WLROOT/libXfont
+    pattern=$( grep "bsd/string.h" ./include/libxfontint.h )
+    if [ -f /usr/include/bsd/string.h ] && [ -z "$pattern" ]
+    then
+        sed -i '/libxfont2/a #include <bsd/string.h>  /* for strlcpy, strlcat */' ./include/libxfontint.h
+    fi
 	gen libXfont
 	compile
 
@@ -186,7 +194,11 @@ if [ ${INCLUDE_XWAYLAND} ]; then
 	./autogen.sh --prefix=$WLD --disable-docs --disable-devel-docs \
 		--enable-xwayland --disable-xorg --disable-xvfb --disable-xnest \
 		--disable-xquartz --disable-xwin
-	compile
+    make -j && make install
+    if [ $? != 0 ]; then
+        echo "Build Error.  Terminating"
+        exit
+    fi
 
 	echo
 	echo "Paths"
@@ -203,18 +215,14 @@ echo
 echo "weston"
 cd $WLROOT/weston
 git clean -xfd
-./autogen.sh --prefix=$WLD \
-	--with-cairo=image \
-	--with-xserver-path=$WLD/bin/Xwayland \
-	--enable-setuid-install=no \
-	--enable-clients \
-	--enable-headless-compositor \
-	--enable-demo-clients-install
+meson build/ -Dprefix=$WLD \
+	-Dxwayland-path=$WLD/bin/Xwayland
 compile
 #distcheck
 
 # Set up config file if it isn't there already
 if [ ! -e $HOME/.config/weston.ini ]; then
+    cd $WLROOT/weston/build/compositor
 	cp weston.ini $HOME/.config/
 fi
 
