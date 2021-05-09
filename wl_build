@@ -56,6 +56,11 @@ distcheck() {
 
 mkdir -p $WLD/share/aclocal
 
+echo clang
+cd $WLROOT
+wget https://github.com/llvm/llvm-project/releases/download/llvmorg-12.0.0/clang+llvm-12.0.0-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+tar -xf clang+llvm-12.0.0-x86_64-linux-gnu-ubuntu-20.04.tar.xz -C $WLD --strip-components=1
+
 gen wayland
 compile
 
